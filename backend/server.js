@@ -6,13 +6,21 @@ const multer = require('multer');          // File upload handler
 const csv = require('csv-parser');         // CSV file reader
 const fs = require('fs');                  // File system (built into Node)
 const cors = require('cors');              // Cross-origin requests
+
+
+
 const axios = require('axios');  // NEW: HTTP client to talk to Ollama
 
 // Line 7: Create the Express application
 const app = express();
 
 // Line 8: Allow frontend to talk to backend
-app.use(cors());
+// app.use(cors());
+app.use(cors({
+    origin: '*',  // Allow any origin (safe for local dev, change in production)
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
+}));
 
 // Line 9: Parse JSON bodies in requests
 app.use(express.json());
@@ -78,20 +86,28 @@ async function generateReport(uploadId) {
     const productList = topProducts.map(p => `${p.product_name} (${p.total_sold} units)`).join(', ');
     
     const prompt = `
-You are a senior business analyst writing for a small tea shop owner in India.
-Analyze this sales data and respond with exactly 2 short paragraphs:
-1. A summary of what the data shows.
-2. One specific, actionable recommendation to increase revenue.
+    You are a senior business analyst writing for a small tea shop owner in India.
 
-Data:
-- Total Transactions: ${s.total_transactions}
-- Total Revenue: ₹${Number(s.total_revenue).toFixed(2)}
-- Average Order Value: ₹${Number(s.avg_order_value).toFixed(2)}
-- Unique Customers: ${s.unique_customers}
-- Top Products: ${productList}
+    Analyze this sales data and respond with EXACTLY this JSON format, no other text:
 
-Write in plain English. Be direct. No fluff.
-`;
+    {
+    "summary": "2-3 sentences describing what the data shows. Plain English. No markdown.",
+    "recommendation": "2-3 sentences of specific actionable advice. Plain English. No markdown."
+    }
+
+    Data:
+    - Total Transactions: ${s.total_transactions}
+    - Total Revenue: ₹${Number(s.total_revenue).toFixed(2)}
+    - Average Order Value: ₹${Number(s.avg_order_value).toFixed(2)}
+    - Unique Customers: ${s.unique_customers}
+    - Top Products: ${productList}
+
+    Rules:
+    - No markdown syntax (** or *)
+    - No headers like "Summary:" or "Recommendation:"
+    - No transition words like "However" or "Based on this"
+    - Just the raw JSON object
+    `;
     
     // Step 4: Send to Ollama (localhost:11434 is where Ollama listens)
     const response = await axios.post('http://localhost:11434/api/generate', {
@@ -101,14 +117,21 @@ Write in plain English. Be direct. No fluff.
     });
     
     const aiText = response.data.response;
+    let parsed;
+    try {
+        parsed = JSON.parse(aiText);
+    } catch (e) {
+        // Fallback: if AI didn't format as JSON, use text parser
+        parsed = { summary: aiText, recommendation: '' };
+    }
     
     // Step 5: Save the report to database
     await pool.execute(
         'INSERT INTO reports (upload_id, summary_text, recommendations) VALUES (?, ?, ?)',
-        [uploadId, aiText, aiText]  // We store full text in both columns for now
+        [uploadId,parsed.summary, parsed.recommendation] 
     );
     
-    return aiText;
+    return { summary: parsed.summary, recommendation: parsed.recommendation };
 }
 
 // ============ UPLOAD ENDPOINT (MODIFIED) ============
